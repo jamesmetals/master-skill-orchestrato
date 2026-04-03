@@ -10,7 +10,7 @@ npm run build
 node dist/cli.js doctor
 ```
 
-## Fluxo básico
+## Fluxo basico
 
 ```bash
 npx tsx src/cli.ts init
@@ -23,12 +23,12 @@ npx tsx src/cli.ts add framework bmad
 
 ## Comandos
 
-- `init`: salva agente padrão, pasta global de skills e pasta externa de skills
-- `doctor`: inspeciona configuração e markers do projeto
-- `bootstrap`: instala pré-requisitos como `uv` e `gh` quando possível
-- `list skills`: lista skills disponíveis na pasta externa
+- `init`: salva agente padrao, pasta global de skills e pasta externa de skills
+- `doctor`: inspeciona configuracao e markers do projeto
+- `bootstrap`: instala pre-requisitos como `uv` e `gh` quando possivel
+- `list skills`: lista skills disponiveis na pasta externa
 - `add skill <query>`: copia uma skill para o projeto atual
-- `sync skills`: copia várias skills em lote para o projeto atual
+- `sync skills`: copia varias skills em lote para o projeto atual
 - `add framework <framework>`: executa o instalador oficial do framework
 
 ## Frameworks suportados
@@ -37,7 +37,7 @@ npx tsx src/cli.ts add framework bmad
 - `spec-kit`
 - `antigravity-kit`
 
-## Publicação npm
+## Publicacao npm
 
 ```bash
 npm login
