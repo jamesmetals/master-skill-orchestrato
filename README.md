@@ -9,12 +9,14 @@ npm install
 npm run build
 node dist/cli.js
 node dist/cli.js doctor
+node dist/cli.js assist "I want to build a frontend landing page"
 ```
 
 ## Fluxo basico
 
 ```bash
 npx tsx src/cli.ts
+npx tsx src/cli.ts assist "I need specs for a new feature"
 npx tsx src/cli.ts guide
 npx tsx src/cli.ts init
 npx tsx src/cli.ts list skills
@@ -27,6 +29,7 @@ npx tsx src/cli.ts add framework bmad
 ## Comandos
 
 - `master-skill` sem argumentos: abre a home interativa e explica o que a CLI faz no projeto atual
+- `assist [goal]`: interpreta sua intencao e sugere o proximo passo com base no projeto atual
 - `guide`: mostra um resumo contextual do projeto atual e o proximo passo recomendado
 - `init`: salva agente padrao, pasta global de skills e pasta externa de skills
 - `doctor`: inspeciona configuracao e markers do projeto
@@ -54,6 +57,7 @@ npm publish
 
 ```bash
 npx master-skill-orchestrator
+npx master-skill-orchestrator assist "I need specs for a new feature"
 npx master-skill-orchestrator guide
 npx master-skill-orchestrator init
 npx master-skill-orchestrator doctor

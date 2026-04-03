@@ -49,6 +49,12 @@ import {
   inspectTools,
   type ToolId,
 } from "./tools.js";
+import {
+  buildAssistantRecommendation,
+  formatAssistantRecommendation,
+  type AssistantAction,
+  type AssistantRecommendation,
+} from "./assistant.js";
 
 interface InitOptions {
   agent?: string;
@@ -76,6 +82,10 @@ interface BootstrapOptions {
   tool: string[];
   framework: string[];
   dryRun?: boolean;
+}
+
+interface AssistOptions {
+  run?: boolean;
 }
 
 interface ProjectSnapshot {
@@ -512,6 +522,20 @@ function printSkillList(skills: SkillDescriptor[]): void {
   }
 }
 
+function getSkillsForAssistant(): SkillDescriptor[] {
+  const config = loadConfig();
+
+  if (!config || !fs.existsSync(config.externalSkillsDir)) {
+    return [];
+  }
+
+  try {
+    return listSkills(config.externalSkillsDir);
+  } catch {
+    return [];
+  }
+}
+
 function executeAddSkill(query: string, options: AddSkillOptions): string {
   const config = loadConfig();
 
@@ -649,6 +673,110 @@ async function executeBootstrap(options: BootstrapOptions): Promise<void> {
   );
 }
 
+async function buildAssistantPlan(goal: string): Promise<AssistantRecommendation> {
+  const snapshot = await getProjectSnapshot(process.cwd());
+  const skills = getSkillsForAssistant();
+  const toolStatuses = await inspectTools(["node", "npm", "npx", "python", "uv", "git", "gh"]);
+
+  return buildAssistantRecommendation({
+    goal,
+    snapshot,
+    skills,
+    toolStatuses,
+  });
+}
+
+function printAssistantPlan(plan: AssistantRecommendation): void {
+  note(formatAssistantRecommendation(plan), "Assistant plan");
+}
+
+async function executeAssistantAction(action: AssistantAction): Promise<void> {
+  switch (action.kind) {
+    case "init":
+      await executeInitWorkflow({});
+      return;
+    case "doctor":
+      printDoctorReport(await buildDoctorReport());
+      return;
+    case "add-skill":
+      if (!action.skillQuery) {
+        throw new Error("Assistant action is missing a skill query.");
+      }
+      executeAddSkill(action.skillQuery, { force: false });
+      return;
+    case "sync-skills":
+      executeSyncSkills({
+        query: action.skillQueries ?? [],
+        force: false,
+      });
+      return;
+    case "add-framework":
+      if (!action.frameworkId) {
+        throw new Error("Assistant action is missing a framework id.");
+      }
+      await executeAddFramework(action.frameworkId, { dryRun: false });
+      return;
+    case "bootstrap":
+      await executeBootstrap({
+        tool: (action.toolIds ?? []) as string[],
+        framework: [],
+        dryRun: false,
+      });
+      return;
+    default:
+      throw new Error(`Unsupported assistant action: ${JSON.stringify(action)}`);
+  }
+}
+
+async function promptForGoal(message: string): Promise<string> {
+  if (!isInteractiveSession()) {
+    return "";
+  }
+
+  const answer = await text({
+    message,
+    placeholder: "example: I want to set up frontend work for this project",
+  });
+
+  return assertPromptResult<string>(answer).trim();
+}
+
+async function maybeRunAssistantPlan(plan: AssistantRecommendation): Promise<void> {
+  if (!isInteractiveSession() || plan.actions.length === 0) {
+    return;
+  }
+
+  const answer = await select({
+    message: "Do you want Master Skill to execute one of these actions now?",
+    options: [
+      {
+        value: "none",
+        label: "Just keep the plan",
+        hint: "Review the recommendation and act later.",
+      },
+      ...plan.actions.map((action) => ({
+        value: action.id,
+        label: action.label,
+        hint: action.reason,
+      })),
+    ],
+  });
+
+  const selected = assertPromptResult(answer);
+
+  if (selected === "none") {
+    return;
+  }
+
+  const action = plan.actions.find((item) => item.id === selected);
+
+  if (!action) {
+    throw new Error(`Unknown assistant action: ${String(selected)}`);
+  }
+
+  await executeAssistantAction(action);
+}
+
 async function promptForFrameworkSelection(): Promise<FrameworkId> {
   const answer = await select({
     message: "Which framework do you want to install in this project?",
@@ -761,6 +889,11 @@ async function maybeContinueAfterInit(): Promise<void> {
         hint: "Show what exists in the external skills library.",
       },
       {
+        value: "assistant",
+        label: "Ask the assistant what fits this project",
+        hint: "Interpret your goal and suggest the next step.",
+      },
+      {
         value: "finish",
         label: "Finish for now",
         hint: "Keep the saved config and exit onboarding.",
@@ -785,6 +918,13 @@ async function maybeContinueAfterInit(): Promise<void> {
     }
     case "list-skills": {
       printSkillList(executeListSkills());
+      return;
+    }
+    case "assistant": {
+      const goal = await promptForGoal("What are you trying to do in this project?");
+      const plan = await buildAssistantPlan(goal);
+      printAssistantPlan(plan);
+      await maybeRunAssistantPlan(plan);
       return;
     }
     default:
@@ -838,6 +978,11 @@ async function launchInteractiveHome(): Promise<void> {
           hint: "Install missing tools like uv and gh.",
         },
         {
+          value: "assistant",
+          label: "Ask the assistant",
+          hint: "Describe your goal and let Master Skill suggest the next move.",
+        },
+        {
           value: "exit",
           label: "Exit",
           hint: "Leave the interactive guide.",
@@ -878,6 +1023,13 @@ async function launchInteractiveHome(): Promise<void> {
         await executeBootstrap(bootstrapOptions);
         break;
       }
+      case "assistant": {
+        const goal = await promptForGoal("What are you trying to do in this project?");
+        const plan = await buildAssistantPlan(goal);
+        printAssistantPlan(plan);
+        await maybeRunAssistantPlan(plan);
+        break;
+      }
       default:
         outro("See you later.");
         return;
@@ -890,7 +1042,7 @@ const program = new Command();
 program
   .name("master-skill")
   .description("Orchestrate reusable skills and AI development frameworks across projects.")
-  .version("0.1.1")
+  .version("0.2.0")
   .showHelpAfterError();
 
 program.action(async () => {
@@ -904,6 +1056,28 @@ program.action(async () => {
     "\nRun `master-skill init` to onboard, or `master-skill doctor` to inspect the current project.",
   );
 });
+
+program
+  .command("assist [goal...]")
+  .description(
+    "Analyze the current project, interpret your goal, and suggest or execute the next step.",
+  )
+  .option("--run", "Execute the top assistant recommendation immediately", false)
+  .action(async (goalWords: string[] = [], options: AssistOptions) => {
+    const goal =
+      goalWords.length > 0
+        ? goalWords.join(" ")
+        : await promptForGoal("What are you trying to do in this project?");
+    const plan = await buildAssistantPlan(goal);
+    printAssistantPlan(plan);
+
+    if (options.run && plan.actions.length > 0) {
+      await executeAssistantAction(plan.actions[0]);
+      return;
+    }
+
+    await maybeRunAssistantPlan(plan);
+  });
 
 program
   .command("guide")
