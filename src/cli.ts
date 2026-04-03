@@ -31,6 +31,14 @@ import {
   type OrchestratorConfig,
 } from "./config.js";
 import {
+  getMessages,
+  normalizeLocale,
+  resolveStartupLocale,
+  SUPPORTED_LOCALES,
+  type I18nMessages,
+  type SupportedLocale,
+} from "./i18n.js";
+import {
   FRAMEWORKS,
   getFrameworkById,
   runFrameworkInstall,
@@ -55,9 +63,17 @@ import {
   type AssistantAction,
   type AssistantRecommendation,
 } from "./assistant.js";
+import {
+  renderBrandHeader,
+  renderCommandMap,
+  renderKeyValuePanel,
+  renderStageFlow,
+  type BrandMode,
+} from "./branding.js";
 
 interface InitOptions {
   agent?: string;
+  lang?: string;
   globalDir?: string;
   skillsDir?: string;
 }
@@ -108,13 +124,58 @@ interface DoctorReport {
   tooling: string;
 }
 
+const startupConfig = loadConfig();
+let activeLocale: SupportedLocale = resolveStartupLocale(
+  process.argv,
+  startupConfig?.locale,
+);
+let messages: I18nMessages = getMessages(activeLocale);
+
+function setActiveLocale(locale: SupportedLocale): void {
+  activeLocale = locale;
+  messages = getMessages(locale);
+}
+
+function withLangOption<T extends Command>(command: T): T {
+  return command.option("--lang <locale>", messages.help.langOption);
+}
+
+function printBrandHeader(mode: BrandMode): void {
+  if (!isInteractiveSession()) {
+    return;
+  }
+
+  console.log("");
+  console.log(renderBrandHeader(mode, messages));
+  console.log("");
+}
+
+function printBrandPanels(
+  mode: BrandMode,
+  contextRows?: Array<{ label: string; value: string }>,
+): void {
+  if (!isInteractiveSession()) {
+    return;
+  }
+
+  note(renderStageFlow(mode, messages), messages.branding.executionFlow);
+
+  if (mode === "home") {
+    note(renderCommandMap(messages), messages.branding.commandMap);
+  }
+
+  if (contextRows && contextRows.length > 0) {
+    note(renderKeyValuePanel(contextRows), messages.branding.currentContext);
+  }
+}
+
 function isInteractiveSession(): boolean {
   return Boolean(process.stdin.isTTY && process.stdout.isTTY);
 }
 
 function assertPromptResult<T>(value: T | symbol): T {
   if (isCancel(value)) {
-    cancel("Operation cancelled.");
+    cancel(messages.outputs.operationCancelled);
     process.exit(0);
   }
 
@@ -122,9 +183,35 @@ function assertPromptResult<T>(value: T | symbol): T {
 }
 
 function requireInteractivePrompt(optionHint: string): never {
-  throw new Error(
-    `Interactive input is required here. Re-run in a terminal, or pass ${optionHint}.`,
-  );
+  throw new Error(messages.prompts.interactiveRequired(optionHint));
+}
+
+async function promptForLocale(initialValue?: string): Promise<SupportedLocale> {
+  const normalized = normalizeLocale(initialValue);
+
+  if (initialValue && !normalized) {
+    throw new Error(
+      messages.errors.unsupportedLocale(initialValue, SUPPORTED_LOCALES.join(", ")),
+    );
+  }
+
+  if (normalized) {
+    return normalized;
+  }
+
+  if (!isInteractiveSession()) {
+    return activeLocale;
+  }
+
+  const answer = await select({
+    message: messages.prompts.localeQuestion,
+    options: SUPPORTED_LOCALES.map((locale) => ({
+      value: locale,
+      label: getMessages(locale).localeNames[locale],
+    })),
+  });
+
+  return assertPromptResult(answer) as SupportedLocale;
 }
 
 async function promptForAgent(initialAgent?: string): Promise<AgentDefinition> {
@@ -139,7 +226,7 @@ async function promptForAgent(initialAgent?: string): Promise<AgentDefinition> {
   }
 
   const answer = await select({
-    message: "Which AI agent should be managed by default?",
+    message: messages.prompts.agentQuestion,
     options: AGENTS.map((agent) => ({
       value: agent.id,
       label: agent.label,
@@ -151,7 +238,7 @@ async function promptForAgent(initialAgent?: string): Promise<AgentDefinition> {
   const agent = getAgentById(agentId);
 
   if (!agent) {
-    throw new Error(`Unsupported agent: ${String(agentId)}`);
+    throw new Error(messages.errors.unsupportedAgent(String(agentId)));
   }
 
   return agent;
@@ -177,11 +264,13 @@ async function promptForGlobalSkillsDir(
   }
 
   const answer = await select({
-    message: `Where should the global ${agent.label} skills live?`,
+    message: messages.prompts.globalSkillsQuestion(agent.label),
     options: choices.map((dir) => ({
       value: dir,
       label: dir,
-      hint: fs.existsSync(dir) ? "exists" : "will be created",
+      hint: fs.existsSync(dir)
+        ? messages.outputs.exists
+        : messages.outputs.willBeCreated,
     })),
   });
 
@@ -191,7 +280,7 @@ async function promptForGlobalSkillsDir(
 async function promptForExternalSkillsDir(initialValue?: string): Promise<string> {
   if (initialValue) {
     if (!fs.existsSync(initialValue)) {
-      throw new Error(`External skills directory not found: ${initialValue}`);
+      throw new Error(messages.errors.externalSkillsDirNotFound(initialValue));
     }
 
     return path.resolve(initialValue);
@@ -202,15 +291,15 @@ async function promptForExternalSkillsDir(initialValue?: string): Promise<string
   }
 
   const answer = await text({
-    message: "Where is your reusable skills library?",
-    placeholder: "C:\\Users\\you\\AI-Skills",
+    message: messages.prompts.skillsLibraryQuestion,
+    placeholder: messages.prompts.skillsLibraryPlaceholder,
     validate: (value) => {
       if (!value?.trim()) {
-        return "Provide a folder path.";
+        return messages.prompts.skillsLibraryRequired;
       }
 
       if (!fs.existsSync(value)) {
-        return "Folder not found.";
+        return messages.prompts.skillsLibraryNotFound;
       }
 
       return undefined;
@@ -231,7 +320,7 @@ function pickProjectTarget(cwd: string, preferredAgentId?: string): {
     const preferred = getAgentById(preferredAgentId);
 
     if (!preferred) {
-      throw new Error(`Unsupported agent: ${preferredAgentId}`);
+      throw new Error(messages.errors.unsupportedAgent(preferredAgentId));
     }
 
     const target = getPreferredProjectTarget(cwd, preferred.id);
@@ -253,9 +342,9 @@ function pickProjectTarget(cwd: string, preferredAgentId?: string): {
 
   if (detected.length > 1) {
     throw new Error(
-      `Multiple agent folders detected: ${detected
-        .map((match) => match.target.markerDir)
-        .join(", ")}. Re-run with --agent.`,
+      messages.errors.multipleAgentMarkers(
+        detected.map((match) => match.target.markerDir).join(", "),
+      ),
     );
   }
 
@@ -280,14 +369,15 @@ function pickProjectTarget(cwd: string, preferredAgentId?: string): {
 
 function chooseSkillOrThrow(matches: SkillDescriptor[], query: string): SkillDescriptor {
   if (matches.length === 0) {
-    throw new Error(`No skill matched "${query}".`);
+    throw new Error(messages.errors.noSkillMatch(query));
   }
 
   if (matches.length > 1) {
     throw new Error(
-      `Multiple skills matched "${query}": ${matches
-        .map((skill) => skill.relativePath)
-        .join(", ")}. Narrow the query.`,
+      messages.errors.multipleSkillMatches(
+        query,
+        matches.map((skill) => skill.relativePath).join(", "),
+      ),
     );
   }
 
@@ -315,7 +405,7 @@ function resolveSkillsForSync(
     const matches = findSkillMatches(skills, query);
 
     if (matches.length === 0) {
-      throw new Error(`No skill matched "${query}".`);
+      throw new Error(messages.errors.noSkillMatch(query));
     }
 
     return matches;
@@ -328,8 +418,14 @@ function summarizeToolStatus(statuses: Awaited<ReturnType<typeof inspectTools>>)
   return statuses
     .map(
       (status) =>
-        `${status.label}: ${status.installed ? `ok (${status.detectedCommand})` : "missing"}${
-          status.installCommand ? ` | install: ${status.installCommand}` : ""
+        `${status.label}: ${
+          status.installed
+            ? `${messages.outputs.ok} (${status.detectedCommand})`
+            : messages.outputs.missing
+        }${
+          status.installCommand
+            ? ` | ${messages.outputs.install}: ${status.installCommand}`
+            : ""
         }`,
     )
     .join("\n");
@@ -368,58 +464,58 @@ async function getProjectSnapshot(cwd: string): Promise<ProjectSnapshot> {
 
 function getRecommendedNextStep(snapshot: ProjectSnapshot): string {
   if (!snapshot.config) {
-    return "Run `init` to connect one default agent and your reusable skill library.";
+    return messages.guide.nextStepSetup;
   }
 
   if (snapshot.detectedAgents.length === 0) {
-    return "Open a project with `.agents`, `.claude`, `.agent`, `.cursor` or pass `--agent` explicitly.";
+    return messages.guide.nextStepNoMarkers;
   }
 
   if (snapshot.installedFrameworks.length === 0) {
-    return "Start with `sync skills` for reusable skills, or `add framework` if this project needs a formal workflow.";
+    return messages.guide.nextStepNoFrameworks;
   }
 
-  return "Use `sync skills` to bring reusable capabilities in, or `doctor` to inspect prerequisites before the next install.";
+  return messages.guide.nextStepDefault;
 }
 
 function buildOverview(snapshot: ProjectSnapshot): string {
   return [
-    "Master Skill is an orchestration CLI for AI-first development projects.",
+    messages.guide.intro,
     "",
-    "What it does:",
-    "1. Connect one default agent plus one reusable skill library.",
-    "2. Copy reusable skills into the current project on demand.",
-    "3. Install project frameworks like BMad, Spec Kit, and Antigravity Kit.",
-    "4. Bootstrap missing tools such as uv and gh.",
+    messages.guide.whatItDoes,
+    ...messages.guide.bullets.map((bullet, index) => `${index + 1}. ${bullet}`),
     "",
-    "Project snapshot:",
-    `- Project: ${snapshot.cwd}`,
-    `- Configured default agent: ${
-      snapshot.config ? snapshot.config.agentId : "not configured yet"
+    messages.guide.snapshotTitle,
+    `- ${messages.guide.project}: ${snapshot.cwd}`,
+    `- ${messages.guide.configuredAgent}: ${
+      snapshot.config ? snapshot.config.agentId : messages.guide.notConfiguredYet
     }`,
-    `- Detected agent markers: ${
+    `- ${messages.guide.detectedAgents}: ${
       snapshot.detectedAgents.length > 0
         ? snapshot.detectedAgents
             .map((entry) => `${entry.agent.label} (${entry.target.markerDir})`)
             .join(", ")
-        : "none"
+        : messages.guide.none
     }`,
-    `- Installed frameworks: ${
+    `- ${messages.guide.installedFrameworks}: ${
       snapshot.installedFrameworks.length > 0
         ? snapshot.installedFrameworks.join(", ")
-        : "none detected"
+        : messages.guide.noneDetected
     }`,
-    `- Recommended project target: ${
+    `- ${messages.guide.recommendedTarget}: ${
       snapshot.recommendedTarget
         ? `${snapshot.recommendedTarget.agentLabel} -> ${snapshot.recommendedTarget.markerDir}`
-        : "needs manual selection"
+        : messages.guide.needsManualSelection
     }`,
     "",
-    `Recommended next step: ${getRecommendedNextStep(snapshot)}`,
+    `${messages.guide.recommendedNext}: ${getRecommendedNextStep(snapshot)}`,
   ].join("\n");
 }
 
-function printGuide(snapshot: ProjectSnapshot, title = "Master Skill overview"): void {
+function printGuide(
+  snapshot: ProjectSnapshot,
+  title: string = messages.titles.guide,
+): void {
   note(buildOverview(snapshot), title);
 }
 
@@ -430,21 +526,28 @@ async function buildDoctorReport(cwd = process.cwd()): Promise<DoctorReport> {
 
   return {
     environment: [
-      `CLI home: ${getAppHome()}`,
-      `Config file: ${config ? getConfigPath() : "not found"}`,
-      `Project: ${cwd}`,
-      `Detected agents: ${
+      `${messages.guide.cliHome}: ${getAppHome()}`,
+      `${messages.guide.configFile}: ${
+        config ? getConfigPath() : messages.guide.notFound
+      }`,
+      `${messages.guide.project}: ${cwd}`,
+      `${messages.guide.detectedAgents}: ${
         detected.length > 0
           ? detected.map((entry) => `${entry.agent.label} (${entry.target.markerDir})`).join(", ")
-          : "none"
+          : messages.guide.none
       }`,
     ].join("\n"),
     configuration: config
       ? [
-          `Default agent: ${config.agentId}`,
-          `Global skills: ${config.globalSkillsDir}`,
-          `External skills: ${config.externalSkillsDir}`,
-          `External folder exists: ${fs.existsSync(config.externalSkillsDir) ? "yes" : "no"}`,
+          `${messages.outputs.defaultAgent}: ${config.agentId}`,
+          `${messages.outputs.language}: ${config.locale}`,
+          `${messages.outputs.globalSkills}: ${config.globalSkillsDir}`,
+          `${messages.outputs.externalSkills}: ${config.externalSkillsDir}`,
+          `${messages.outputs.externalFolderExists}: ${
+            fs.existsSync(config.externalSkillsDir)
+              ? messages.outputs.yes
+              : messages.outputs.no
+          }`,
         ].join("\n")
       : undefined,
     tooling: summarizeToolStatus(tools),
@@ -452,32 +555,47 @@ async function buildDoctorReport(cwd = process.cwd()): Promise<DoctorReport> {
 }
 
 function printDoctorReport(report: DoctorReport): void {
-  note(report.environment, "Environment");
+  note(report.environment, messages.titles.environment);
 
   if (report.configuration) {
-    note(report.configuration, "Configuration");
+    note(report.configuration, messages.titles.configuration);
   }
 
-  note(report.tooling, "Tooling");
+  note(report.tooling, messages.titles.tooling);
 }
 
 async function executeInitWorkflow(options: InitOptions): Promise<void> {
+  const current = loadConfig();
+  const locale = options.lang
+    ? await promptForLocale(options.lang)
+    : !isInteractiveSession()
+      ? current?.locale ?? activeLocale
+      : await promptForLocale();
+  setActiveLocale(locale);
   const snapshot = await getProjectSnapshot(process.cwd());
-  printGuide(snapshot, "What Master Skill does");
+  printBrandHeader("init");
+  printBrandPanels("init", [
+    { label: messages.guide.project, value: snapshot.cwd },
+    {
+      label: messages.guide.configuredAgent,
+      value: snapshot.config?.agentId ?? messages.guide.notConfiguredYet,
+    },
+    { label: messages.guide.configFile, value: getConfigPath() },
+  ]);
+  printGuide(snapshot, messages.titles.guideInit);
 
   const agent = await promptForAgent(options.agent);
   const globalSkillsDir = await promptForGlobalSkillsDir(agent, options.globalDir);
   const externalSkillsDir = await promptForExternalSkillsDir(options.skillsDir);
-  const current = loadConfig();
 
   if (current && isInteractiveSession()) {
     const replace = await confirm({
-      message: `Overwrite existing config at ${getConfigPath()}?`,
+      message: messages.prompts.overwriteConfig(getConfigPath()),
       initialValue: true,
     });
 
     if (!assertPromptResult(replace)) {
-      note("Kept the existing configuration.", "Init skipped");
+      note(messages.outputs.keptExistingConfig, messages.titles.initSkipped);
       return;
     }
   }
@@ -487,6 +605,7 @@ async function executeInitWorkflow(options: InitOptions): Promise<void> {
   saveConfig({
     version: 1,
     agentId: agent.id,
+    locale,
     globalSkillsDir,
     externalSkillsDir,
     updatedAt: new Date().toISOString(),
@@ -494,12 +613,13 @@ async function executeInitWorkflow(options: InitOptions): Promise<void> {
 
   note(
     [
-      `Agent: ${agent.label}`,
-      `Global skills: ${globalSkillsDir}`,
-      `External skills: ${externalSkillsDir}`,
-      `Config: ${getConfigPath()}`,
+      `${messages.outputs.language}: ${locale}`,
+      `${messages.outputs.agent}: ${agent.label}`,
+      `${messages.outputs.globalSkills}: ${globalSkillsDir}`,
+      `${messages.outputs.externalSkills}: ${externalSkillsDir}`,
+      `${messages.outputs.config}: ${getConfigPath()}`,
     ].join("\n"),
-    "Saved configuration",
+    messages.titles.savedConfiguration,
   );
 }
 
@@ -507,7 +627,7 @@ function executeListSkills(): SkillDescriptor[] {
   const config = loadConfig();
 
   if (!config) {
-    throw new Error("Configuration not found. Run `master-skill init` first.");
+    throw new Error(messages.errors.configNotFound);
   }
 
   return listSkills(config.externalSkillsDir);
@@ -540,7 +660,7 @@ function executeAddSkill(query: string, options: AddSkillOptions): string {
   const config = loadConfig();
 
   if (!config) {
-    throw new Error("Configuration not found. Run `master-skill init` first.");
+    throw new Error(messages.errors.configNotFound);
   }
 
   const skills = listSkills(config.externalSkillsDir);
@@ -550,12 +670,12 @@ function executeAddSkill(query: string, options: AddSkillOptions): string {
 
   note(
     [
-      `Skill: ${skill.name}`,
-      `Agent: ${target.agent.label}`,
-      `Marker: ${target.markerDir}`,
-      `Destination: ${destination}`,
+      `${messages.outputs.skill}: ${skill.name}`,
+      `${messages.outputs.agent}: ${target.agent.label}`,
+      `${messages.outputs.marker}: ${target.markerDir}`,
+      `${messages.outputs.destination}: ${destination}`,
     ].join("\n"),
-    "Skill installed",
+    messages.titles.skillInstalled,
   );
 
   return destination;
@@ -569,7 +689,10 @@ async function executeAddFramework(
 
   if (!frameworkDefinition) {
     throw new Error(
-      `Unsupported framework: ${framework}. Available: ${FRAMEWORKS.map((item) => item.id).join(", ")}`,
+      messages.errors.unsupportedFramework(
+        framework,
+        FRAMEWORKS.map((item) => item.id).join(", "),
+      ),
     );
   }
 
@@ -582,15 +705,15 @@ async function executeAddFramework(
   );
 
   if (options.dryRun) {
-    note(command, "Dry run");
+    note(command, messages.titles.dryRun);
   } else {
     note(
       [
-        `Framework: ${frameworkDefinition.label}`,
-        `Agent target: ${target.agent.label}`,
-        `Command: ${command}`,
+        `${messages.outputs.framework}: ${frameworkDefinition.label}`,
+        `${messages.outputs.agentTarget}: ${target.agent.label}`,
+        `${messages.outputs.command}: ${command}`,
       ].join("\n"),
-      "Framework installed",
+      messages.titles.frameworkInstalled,
     );
   }
 
@@ -601,7 +724,7 @@ function executeSyncSkills(options: SyncSkillsOptions): void {
   const config = loadConfig();
 
   if (!config) {
-    throw new Error("Configuration not found. Run `master-skill init` first.");
+    throw new Error(messages.errors.configNotFound);
   }
 
   const allSkills = listSkills(config.externalSkillsDir);
@@ -624,15 +747,19 @@ function executeSyncSkills(options: SyncSkillsOptions): void {
 
   note(
     [
-      `Agent: ${target.agent.label}`,
-      `Installed: ${installed.length}`,
-      `Skipped: ${skipped.length}`,
-      installed.length > 0 ? `Installed skills: ${installed.join(", ")}` : "",
-      skipped.length > 0 ? `Skipped existing: ${skipped.join(", ")}` : "",
+      `${messages.outputs.agent}: ${target.agent.label}`,
+      `${messages.outputs.installed}: ${installed.length}`,
+      `${messages.outputs.skipped}: ${skipped.length}`,
+      installed.length > 0
+        ? `${messages.outputs.installedSkills}: ${installed.join(", ")}`
+        : "",
+      skipped.length > 0
+        ? `${messages.outputs.skippedExisting}: ${skipped.join(", ")}`
+        : "",
     ]
       .filter(Boolean)
       .join("\n"),
-    "Sync complete",
+    messages.titles.syncComplete,
   );
 }
 
@@ -642,7 +769,10 @@ async function executeBootstrap(options: BootstrapOptions): Promise<void> {
 
     if (!requirements) {
       throw new Error(
-        `Unsupported framework: ${framework}. Available: ${FRAMEWORKS.map((item) => item.id).join(", ")}`,
+        messages.errors.unsupportedFramework(
+          framework,
+          FRAMEWORKS.map((item) => item.id).join(", "),
+        ),
       );
     }
 
@@ -658,7 +788,7 @@ async function executeBootstrap(options: BootstrapOptions): Promise<void> {
   const results = await bootstrapTools(targetTools, Boolean(options.dryRun));
 
   if (results.length === 0) {
-    note("Nothing to do. Requested tools are already installed.", "Bootstrap");
+    note(messages.outputs.nothingToDo, messages.titles.bootstrap);
     return;
   }
 
@@ -669,7 +799,7 @@ async function executeBootstrap(options: BootstrapOptions): Promise<void> {
           `${result.toolId}: ${result.command}${result.executed ? "" : " (dry-run)"}`,
       )
       .join("\n"),
-    "Bootstrap plan",
+    messages.titles.bootstrapPlan,
   );
 }
 
@@ -683,11 +813,12 @@ async function buildAssistantPlan(goal: string): Promise<AssistantRecommendation
     snapshot,
     skills,
     toolStatuses,
+    messages,
   });
 }
 
 function printAssistantPlan(plan: AssistantRecommendation): void {
-  note(formatAssistantRecommendation(plan), "Assistant plan");
+  note(formatAssistantRecommendation(plan, messages), messages.titles.assistantPlan);
 }
 
 async function executeAssistantAction(action: AssistantAction): Promise<void> {
@@ -700,7 +831,7 @@ async function executeAssistantAction(action: AssistantAction): Promise<void> {
       return;
     case "add-skill":
       if (!action.skillQuery) {
-        throw new Error("Assistant action is missing a skill query.");
+        throw new Error(messages.errors.missingAssistantSkillQuery);
       }
       executeAddSkill(action.skillQuery, { force: false });
       return;
@@ -712,7 +843,7 @@ async function executeAssistantAction(action: AssistantAction): Promise<void> {
       return;
     case "add-framework":
       if (!action.frameworkId) {
-        throw new Error("Assistant action is missing a framework id.");
+        throw new Error(messages.errors.missingAssistantFrameworkId);
       }
       await executeAddFramework(action.frameworkId, { dryRun: false });
       return;
@@ -724,7 +855,7 @@ async function executeAssistantAction(action: AssistantAction): Promise<void> {
       });
       return;
     default:
-      throw new Error(`Unsupported assistant action: ${JSON.stringify(action)}`);
+      throw new Error(messages.errors.unknownAssistantAction(JSON.stringify(action)));
   }
 }
 
@@ -735,7 +866,7 @@ async function promptForGoal(message: string): Promise<string> {
 
   const answer = await text({
     message,
-    placeholder: "example: I want to set up frontend work for this project",
+    placeholder: messages.prompts.goalPlaceholder,
   });
 
   return assertPromptResult<string>(answer).trim();
@@ -747,12 +878,12 @@ async function maybeRunAssistantPlan(plan: AssistantRecommendation): Promise<voi
   }
 
   const answer = await select({
-    message: "Do you want Master Skill to execute one of these actions now?",
+    message: messages.prompts.assistantRunQuestion,
     options: [
       {
         value: "none",
-        label: "Just keep the plan",
-        hint: "Review the recommendation and act later.",
+        label: messages.prompts.assistantRunNone,
+        hint: messages.prompts.assistantRunNoneHint,
       },
       ...plan.actions.map((action) => ({
         value: action.id,
@@ -771,7 +902,7 @@ async function maybeRunAssistantPlan(plan: AssistantRecommendation): Promise<voi
   const action = plan.actions.find((item) => item.id === selected);
 
   if (!action) {
-    throw new Error(`Unknown assistant action: ${String(selected)}`);
+    throw new Error(messages.errors.unknownAssistantAction(String(selected)));
   }
 
   await executeAssistantAction(action);
@@ -779,7 +910,7 @@ async function maybeRunAssistantPlan(plan: AssistantRecommendation): Promise<voi
 
 async function promptForFrameworkSelection(): Promise<FrameworkId> {
   const answer = await select({
-    message: "Which framework do you want to install in this project?",
+    message: messages.prompts.frameworkQuestion,
     options: FRAMEWORKS.map((framework) => ({
       value: framework.id,
       label: framework.label,
@@ -793,7 +924,8 @@ async function promptForFrameworkSelection(): Promise<FrameworkId> {
 async function promptForSkillQuery(message: string): Promise<string> {
   const answer = await text({
     message,
-    validate: (value) => (!value?.trim() ? "Provide a skill name or keyword." : undefined),
+    validate: (value) =>
+      !value?.trim() ? messages.prompts.goalRequired : undefined,
   });
 
   return assertPromptResult<string>(answer).trim();
@@ -801,17 +933,17 @@ async function promptForSkillQuery(message: string): Promise<string> {
 
 async function promptForSyncQueries(): Promise<string[]> {
   const mode = await select({
-    message: "How do you want to sync skills into this project?",
+    message: messages.prompts.syncModeQuestion,
     options: [
       {
         value: "all",
-        label: "All reusable skills",
-        hint: "Copy every skill from the external library into this project.",
+        label: messages.prompts.syncModeAll,
+        hint: messages.prompts.syncModeAllHint,
       },
       {
         value: "filtered",
-        label: "Filtered subset",
-        hint: "Choose a keyword and copy only matching skills.",
+        label: messages.prompts.syncModeFiltered,
+        hint: messages.prompts.syncModeFilteredHint,
       },
     ],
   });
@@ -821,7 +953,7 @@ async function promptForSyncQueries(): Promise<string[]> {
   }
 
   const query = await promptForSkillQuery(
-    "Which skill keyword should be synced into this project?",
+    messages.prompts.skillKeywordQuestion,
   );
 
   return [query];
@@ -829,17 +961,17 @@ async function promptForSyncQueries(): Promise<string[]> {
 
 async function promptForBootstrapTargets(): Promise<BootstrapOptions> {
   const mode = await select({
-    message: "What should Master Skill bootstrap?",
+    message: messages.prompts.bootstrapQuestion,
     options: [
       {
         value: "recommended",
-        label: "Recommended tools",
-        hint: "Install the default helper tools used by the CLI.",
+        label: messages.prompts.bootstrapRecommended,
+        hint: messages.prompts.bootstrapRecommendedHint,
       },
       {
         value: "framework",
-        label: "Tools for one framework",
-        hint: "Bootstrap prerequisites for BMad, Spec Kit, or Antigravity Kit.",
+        label: messages.prompts.bootstrapFramework,
+        hint: messages.prompts.bootstrapFrameworkHint,
       },
     ],
   });
@@ -866,37 +998,37 @@ async function maybeContinueAfterInit(): Promise<void> {
   }
 
   const answer = await select({
-    message: "Configuration saved. What do you want to do next in this project?",
+    message: messages.prompts.continueAfterInit,
     options: [
       {
         value: "doctor",
-        label: "Inspect this project",
-        hint: "Show config, markers, and tool prerequisites.",
+        label: messages.prompts.continueDoctor,
+        hint: messages.prompts.continueDoctorHint,
       },
       {
         value: "sync-skills",
-        label: "Sync reusable skills",
-        hint: "Copy your shared skills into the current project.",
+        label: messages.prompts.continueSync,
+        hint: messages.prompts.continueSyncHint,
       },
       {
         value: "framework",
-        label: "Install one framework",
-        hint: "Run BMad, Spec Kit, or Antigravity Kit for this project.",
+        label: messages.prompts.continueFramework,
+        hint: messages.prompts.continueFrameworkHint,
       },
       {
         value: "list-skills",
-        label: "Browse available skills",
-        hint: "Show what exists in the external skills library.",
+        label: messages.prompts.continueList,
+        hint: messages.prompts.continueListHint,
       },
       {
         value: "assistant",
-        label: "Ask the assistant what fits this project",
-        hint: "Interpret your goal and suggest the next step.",
+        label: messages.prompts.continueAssistant,
+        hint: messages.prompts.continueAssistantHint,
       },
       {
         value: "finish",
-        label: "Finish for now",
-        hint: "Keep the saved config and exit onboarding.",
+        label: messages.prompts.continueFinish,
+        hint: messages.prompts.continueFinishHint,
       },
     ],
   });
@@ -921,7 +1053,7 @@ async function maybeContinueAfterInit(): Promise<void> {
       return;
     }
     case "assistant": {
-      const goal = await promptForGoal("What are you trying to do in this project?");
+      const goal = await promptForGoal(messages.prompts.goalQuestion);
       const plan = await buildAssistantPlan(goal);
       printAssistantPlan(plan);
       await maybeRunAssistantPlan(plan);
@@ -933,59 +1065,79 @@ async function maybeContinueAfterInit(): Promise<void> {
 }
 
 async function launchInteractiveHome(): Promise<void> {
-  intro("Master Skill Orchestrator");
+  const initialSnapshot = await getProjectSnapshot(process.cwd());
+  printBrandHeader("home");
+  printBrandPanels("home", [
+    { label: messages.guide.project, value: initialSnapshot.cwd },
+    {
+      label: messages.guide.configuredAgent,
+      value: initialSnapshot.config?.agentId ?? messages.guide.notConfiguredYet,
+    },
+    {
+      label: messages.guide.detectedAgents,
+      value:
+        initialSnapshot.detectedAgents.length > 0
+          ? initialSnapshot.detectedAgents
+              .map((entry) => `${entry.agent.label} (${entry.target.markerDir})`)
+              .join(", ")
+          : messages.guide.none,
+    },
+  ]);
+  intro(messages.titles.home);
 
   while (true) {
     const snapshot = await getProjectSnapshot(process.cwd());
-    printGuide(snapshot, "What Master Skill can do for this project");
+    printGuide(snapshot, messages.titles.guideProject);
 
     const answer = await select({
-      message: "What do you want to do now?",
+      message: messages.prompts.homeQuestion,
       options: [
         {
           value: "init",
-          label: snapshot.config ? "Reconfigure Master Skill" : "Start onboarding",
-          hint: "Connect your default agent and external skill library.",
+          label: snapshot.config
+            ? messages.prompts.homeReconfigure
+            : messages.prompts.homeStart,
+          hint: messages.prompts.homeInitHint,
         },
         {
           value: "doctor",
-          label: "Inspect this project",
-          hint: "Review config, markers, and prerequisite tools.",
+          label: messages.prompts.homeDoctor,
+          hint: messages.prompts.homeDoctorHint,
         },
         {
           value: "list-skills",
-          label: "Browse reusable skills",
-          hint: "Show what is available in your external skill library.",
+          label: messages.prompts.homeListSkills,
+          hint: messages.prompts.homeListSkillsHint,
         },
         {
           value: "add-skill",
-          label: "Install one skill",
-          hint: "Copy one reusable skill into this project.",
+          label: messages.prompts.homeAddSkill,
+          hint: messages.prompts.homeAddSkillHint,
         },
         {
           value: "sync-skills",
-          label: "Sync skills in bulk",
-          hint: "Copy all skills or a filtered subset into this project.",
+          label: messages.prompts.homeSyncSkills,
+          hint: messages.prompts.homeSyncSkillsHint,
         },
         {
           value: "framework",
-          label: "Install one framework",
-          hint: "Run BMad, Spec Kit, or Antigravity Kit here.",
+          label: messages.prompts.homeFramework,
+          hint: messages.prompts.homeFrameworkHint,
         },
         {
           value: "bootstrap",
-          label: "Bootstrap prerequisites",
-          hint: "Install missing tools like uv and gh.",
+          label: messages.prompts.homeBootstrap,
+          hint: messages.prompts.homeBootstrapHint,
         },
         {
           value: "assistant",
-          label: "Ask the assistant",
-          hint: "Describe your goal and let Master Skill suggest the next move.",
+          label: messages.prompts.homeAssistant,
+          hint: messages.prompts.homeAssistantHint,
         },
         {
           value: "exit",
-          label: "Exit",
-          hint: "Leave the interactive guide.",
+          label: messages.prompts.homeExit,
+          hint: messages.prompts.homeExitHint,
         },
       ],
     });
@@ -1003,7 +1155,7 @@ async function launchInteractiveHome(): Promise<void> {
         break;
       case "add-skill": {
         const query = await promptForSkillQuery(
-          "Which reusable skill do you want to install into this project?",
+          messages.prompts.skillQuestion,
         );
         executeAddSkill(query, { force: false });
         break;
@@ -1024,14 +1176,14 @@ async function launchInteractiveHome(): Promise<void> {
         break;
       }
       case "assistant": {
-        const goal = await promptForGoal("What are you trying to do in this project?");
+        const goal = await promptForGoal(messages.prompts.goalQuestion);
         const plan = await buildAssistantPlan(goal);
         printAssistantPlan(plan);
         await maybeRunAssistantPlan(plan);
         break;
       }
       default:
-        outro("See you later.");
+        outro(messages.outputs.seeYouLater);
         return;
     }
   }
@@ -1041,9 +1193,11 @@ const program = new Command();
 
 program
   .name("master-skill")
-  .description("Orchestrate reusable skills and AI development frameworks across projects.")
-  .version("0.2.0")
+  .description(messages.help.rootDescription)
+  .version("0.4.0")
   .showHelpAfterError();
+
+withLangOption(program);
 
 program.action(async () => {
   if (isInteractiveSession()) {
@@ -1052,22 +1206,27 @@ program.action(async () => {
   }
 
   printGuide(await getProjectSnapshot(process.cwd()));
-  console.log(
-    "\nRun `master-skill init` to onboard, or `master-skill doctor` to inspect the current project.",
-  );
+  console.log(`\n${messages.guide.nonInteractiveHint}`);
 });
 
-program
+withLangOption(
+  program
   .command("assist [goal...]")
-  .description(
-    "Analyze the current project, interpret your goal, and suggest or execute the next step.",
-  )
-  .option("--run", "Execute the top assistant recommendation immediately", false)
+  .description(messages.help.assist)
+  .option("--run", messages.help.optionRun, false)
   .action(async (goalWords: string[] = [], options: AssistOptions) => {
+    printBrandHeader("assist");
+    printBrandPanels("assist", [
+      { label: messages.guide.project, value: process.cwd() },
+      {
+        label: messages.guide.configuredAgent,
+        value: loadConfig()?.agentId ?? messages.guide.notConfiguredYet,
+      },
+    ]);
     const goal =
       goalWords.length > 0
         ? goalWords.join(" ")
-        : await promptForGoal("What are you trying to do in this project?");
+        : await promptForGoal(messages.prompts.goalQuestion);
     const plan = await buildAssistantPlan(goal);
     printAssistantPlan(plan);
 
@@ -1077,93 +1236,128 @@ program
     }
 
     await maybeRunAssistantPlan(plan);
-  });
+  }),
+);
 
-program
+withLangOption(
+  program
   .command("guide")
-  .description("Explain what Master Skill does for the current project.")
+  .description(messages.help.guide)
   .action(async () => {
+    printBrandHeader("guide");
+    printBrandPanels("guide", [
+      { label: messages.guide.project, value: process.cwd() },
+      {
+        label: messages.guide.configuredAgent,
+        value: loadConfig()?.agentId ?? messages.guide.notConfiguredYet,
+      },
+    ]);
     printGuide(await getProjectSnapshot(process.cwd()));
-  });
+  }),
+);
 
-program
+withLangOption(
+  program
   .command("init")
-  .description(
-    "Guide onboarding: explain the CLI, connect the default agent, and save the reusable skill library.",
-  )
-  .option("--agent <agent>", "Default agent id")
-  .option("--global-dir <dir>", "Global skills directory for the selected agent")
-  .option("--skills-dir <dir>", "Reusable external skills directory")
+  .description(messages.help.init)
+  .option("--agent <agent>", messages.help.optionDefaultAgent)
+  .option("--global-dir <dir>", messages.help.optionGlobalDir)
+  .option("--skills-dir <dir>", messages.help.optionSkillsDir)
   .action(async (options: InitOptions) => {
-    intro("Master Skill onboarding");
+    intro(messages.titles.onboarding);
     await executeInitWorkflow(options);
     await maybeContinueAfterInit();
-    outro("Onboarding finished.");
-  });
+    outro(messages.outputs.onboardingFinished);
+  }),
+);
 
-program
+withLangOption(
+  program
   .command("doctor")
-  .description("Inspect local configuration, project markers, and basic prerequisites.")
+  .description(messages.help.doctor)
   .action(async () => {
-    intro("Doctor");
+    printBrandHeader("doctor");
+    printBrandPanels("doctor", [
+      { label: messages.guide.project, value: process.cwd() },
+      { label: messages.guide.configFile, value: getConfigPath() },
+    ]);
+    intro(messages.titles.doctor);
     printDoctorReport(await buildDoctorReport());
-    outro("Doctor finished.");
-  });
+    outro(messages.outputs.doctorFinished);
+  }),
+);
 
-const listCommand = program.command("list").description("List available entities.");
+const listCommand = withLangOption(
+  program.command("list").description(messages.help.list),
+);
 
-listCommand
+withLangOption(
+  listCommand
   .command("skills")
-  .description("List skills available in the reusable skills library.")
+  .description(messages.help.listSkills)
   .action(() => {
     printSkillList(executeListSkills());
-  });
+  }),
+);
 
-const addCommand = program
-  .command("add")
-  .description("Install a framework or skill into the current project.");
+const addCommand = withLangOption(
+  program.command("add").description(messages.help.add),
+);
 
-addCommand
+withLangOption(
+  addCommand
   .command("skill <query>")
-  .description("Copy one reusable skill into the current project.")
-  .option("--agent <agent>", "Project agent id")
-  .option("--force", "Overwrite destination if it already exists", false)
+  .description(messages.help.addSkill)
+  .option("--agent <agent>", messages.help.optionAgent)
+  .option("--force", messages.help.optionForce, false)
   .action((query: string, options: AddSkillOptions) => {
     executeAddSkill(query, options);
-  });
+  }),
+);
 
-addCommand
+withLangOption(
+  addCommand
   .command("framework <framework>")
-  .description("Run the official installer for a supported framework in the current project.")
-  .option("--agent <agent>", "Project agent id")
-  .option("--dry-run", "Print the installer command without running it", false)
+  .description(messages.help.addFramework)
+  .option("--agent <agent>", messages.help.optionAgent)
+  .option("--dry-run", messages.help.optionDryRun, false)
   .action(async (framework: FrameworkId, options: AddFrameworkOptions) => {
     await executeAddFramework(framework, options);
-  });
+  }),
+);
 
-const syncCommand = program
-  .command("sync")
-  .description("Synchronize reusable assets into the current project.");
+const syncCommand = withLangOption(
+  program.command("sync").description(messages.help.sync),
+);
 
-syncCommand
+withLangOption(
+  syncCommand
   .command("skills")
-  .description("Sync all reusable skills, or a filtered subset, into the current project.")
-  .option("--agent <agent>", "Project agent id")
-  .option("--query <query>", "Filter skills by query", collectOption, [])
-  .option("--force", "Overwrite existing destinations", false)
+  .description(messages.help.syncSkills)
+  .option("--agent <agent>", messages.help.optionAgent)
+  .option("--query <query>", messages.help.optionQuery, collectOption, [])
+  .option("--force", messages.help.optionForce, false)
   .action((options: SyncSkillsOptions) => {
     executeSyncSkills(options);
-  });
+  }),
+);
 
-program
+withLangOption(
+  program
   .command("bootstrap")
-  .description("Install missing system prerequisites used by frameworks and publishing.")
-  .option("--tool <tool>", "Specific tool to install", collectOption, [])
-  .option("--framework <framework>", "Install prerequisites for a framework", collectOption, [])
-  .option("--dry-run", "Print installer commands without running them", false)
+  .description(messages.help.bootstrap)
+  .option("--tool <tool>", messages.help.optionTool, collectOption, [])
+  .option(
+    "--framework <framework>",
+    messages.help.optionFramework,
+    collectOption,
+    [],
+  )
+  .option("--dry-run", messages.help.optionDryRun, false)
   .action(async (options: BootstrapOptions) => {
     await executeBootstrap(options);
-  });
+  }),
+);
 
 program.parseAsync(process.argv).catch((error: unknown) => {
   console.error(pc.red(error instanceof Error ? error.message : String(error)));

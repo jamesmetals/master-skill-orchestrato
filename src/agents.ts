@@ -52,8 +52,8 @@ export const AGENTS: AgentDefinition[] = [
   },
   {
     id: "claude",
-    label: "Claude Code",
-    aliases: ["claude", "claude code"],
+    label: "Claude Code / Claw",
+    aliases: ["claude", "claude code", "claw"],
     globalSkillDirs: [path.join(home, ".claude", "skills")],
     projectTargets: [
       { markerDir: ".claude", skillsDir: path.join(".claude", "skills") },
@@ -65,8 +65,14 @@ export const AGENTS: AgentDefinition[] = [
   },
   {
     id: "antigravity",
-    label: "Antigravity",
-    aliases: ["antigravity", "google antigravity"],
+    label: "OpenCode / Antigravity",
+    aliases: [
+      "antigravity",
+      "google antigravity",
+      "opencode",
+      "open code",
+      "opencode cli",
+    ],
     globalSkillDirs: [path.join(home, ".gemini", "antigravity", "skills")],
     projectTargets: [
       { markerDir: ".agent", skillsDir: path.join(".agent", "skills") },

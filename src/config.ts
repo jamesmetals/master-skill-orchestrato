@@ -2,10 +2,16 @@ import os from "node:os";
 import path from "node:path";
 import fs from "fs-extra";
 import type { AgentId } from "./agents.js";
+import {
+  detectSystemLocale,
+  normalizeLocale,
+  type SupportedLocale,
+} from "./i18n.js";
 
 export interface OrchestratorConfig {
   version: number;
   agentId: AgentId;
+  locale: SupportedLocale;
   globalSkillsDir: string;
   externalSkillsDir: string;
   updatedAt: string;
@@ -27,7 +33,22 @@ export function loadConfig(): OrchestratorConfig | null {
     return null;
   }
 
-  return fs.readJsonSync(CONFIG_PATH) as OrchestratorConfig;
+  const raw = fs.readJsonSync(CONFIG_PATH) as Partial<OrchestratorConfig> & {
+    locale?: string;
+  };
+
+  if (!raw.agentId || !raw.globalSkillsDir || !raw.externalSkillsDir || !raw.updatedAt) {
+    return null;
+  }
+
+  return {
+    version: raw.version ?? 1,
+    agentId: raw.agentId,
+    locale: normalizeLocale(raw.locale) ?? detectSystemLocale(),
+    globalSkillsDir: raw.globalSkillsDir,
+    externalSkillsDir: raw.externalSkillsDir,
+    updatedAt: raw.updatedAt,
+  };
 }
 
 export function saveConfig(config: OrchestratorConfig): void {

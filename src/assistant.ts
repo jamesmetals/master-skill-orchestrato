@@ -1,6 +1,7 @@
 import type { FrameworkId } from "./frameworks.js";
 import type { SkillDescriptor } from "./skills.js";
 import type { ToolId, ToolStatus } from "./tools.js";
+import type { I18nMessages } from "./i18n.js";
 
 export interface AssistantProjectSnapshot {
   cwd: string;
@@ -40,9 +41,17 @@ export interface AssistantRecommendation {
 }
 
 interface IntentDefinition {
-  id: string;
-  label: string;
-  summary: string;
+  id:
+    | "spec"
+    | "workflow"
+    | "frontend"
+    | "document"
+    | "pdf"
+    | "slides"
+    | "spreadsheet"
+    | "testing"
+    | "integration"
+    | "art";
   keywords: string[];
   frameworkId?: FrameworkId;
   skillHints?: string[];
@@ -51,15 +60,23 @@ interface IntentDefinition {
 const INTENTS: IntentDefinition[] = [
   {
     id: "spec",
-    label: "Specification and planning",
-    summary: "This sounds like requirements, planning, or spec-driven work.",
     keywords: [
       "spec",
       "specification",
       "requirements",
       "requirement",
+      "especificacao",
+      "especificacoes",
+      "requisitos",
+      "requisito",
       "planejar",
       "plano",
+      "planejamento",
+      "estruturar",
+      "estrutura",
+      "organizar",
+      "organizacao",
+      "setup",
       "roadmap",
       "arquitetura",
       "architecture",
@@ -72,16 +89,17 @@ const INTENTS: IntentDefinition[] = [
   },
   {
     id: "workflow",
-    label: "Guided implementation workflow",
-    summary: "This looks like multi-role or process-heavy development work.",
     keywords: [
       "workflow",
       "agile",
       "multi agent",
       "multi-agent",
+      "multiagente",
+      "multiagentes",
       "papel",
       "roles",
       "processo",
+      "implementacao",
       "team flow",
       "sprint",
       "bmad",
@@ -91,8 +109,6 @@ const INTENTS: IntentDefinition[] = [
   },
   {
     id: "frontend",
-    label: "Frontend and interface work",
-    summary: "This sounds like UI, pages, or interaction design work.",
     keywords: [
       "ui",
       "ux",
@@ -105,6 +121,9 @@ const INTENTS: IntentDefinition[] = [
       "screen",
       "layout",
       "design",
+      "pagina",
+      "paginas",
+      "interface",
       "componente",
       "component",
     ],
@@ -112,16 +131,18 @@ const INTENTS: IntentDefinition[] = [
   },
   {
     id: "document",
-    label: "Document authoring",
-    summary: "This sounds like structured documentation or Word-style output.",
     keywords: [
       "document",
+      "documento",
+      "documentacao",
       "doc",
       "docx",
       "word",
       "proposal",
+      "proposta",
       "memo",
       "report",
+      "relatorio",
       "spec doc",
       "manual",
     ],
@@ -129,44 +150,69 @@ const INTENTS: IntentDefinition[] = [
   },
   {
     id: "pdf",
-    label: "PDF workflow",
-    summary: "This sounds like PDF generation or manipulation work.",
-    keywords: ["pdf", "watermark", "ocr", "merge pdf", "split pdf"],
+    keywords: ["pdf", "watermark", "ocr", "merge pdf", "split pdf", "mesclar pdf"],
     skillHints: ["pdf"],
   },
   {
     id: "slides",
-    label: "Presentation workflow",
-    summary: "This sounds like presentation or deck work.",
-    keywords: ["slides", "deck", "presentation", "pitch", "ppt", "pptx"],
+    keywords: [
+      "slides",
+      "deck",
+      "presentation",
+      "pitch",
+      "ppt",
+      "pptx",
+      "apresentacao",
+    ],
     skillHints: ["pptx"],
   },
   {
     id: "spreadsheet",
-    label: "Spreadsheet workflow",
-    summary: "This sounds like spreadsheet or tabular data work.",
     keywords: ["xlsx", "excel", "csv", "spreadsheet", "planilha", "table"],
     skillHints: ["xlsx"],
   },
   {
     id: "testing",
-    label: "Testing and verification",
-    summary: "This sounds like validation, QA, or browser-based verification.",
-    keywords: ["test", "qa", "verify", "bug", "debug", "playwright", "broken"],
+    keywords: [
+      "test",
+      "qa",
+      "verify",
+      "bug",
+      "debug",
+      "playwright",
+      "broken",
+      "teste",
+      "validacao",
+      "quebrado",
+    ],
     skillHints: ["webapp-testing"],
   },
   {
     id: "integration",
-    label: "Integration and protocol work",
-    summary: "This sounds like MCP, API, or integration work.",
-    keywords: ["mcp", "api", "sdk", "integration", "connector", "server"],
+    keywords: [
+      "mcp",
+      "api",
+      "sdk",
+      "integration",
+      "connector",
+      "server",
+      "integracao",
+      "conector",
+    ],
     skillHints: ["mcp-builder"],
   },
   {
     id: "art",
-    label: "Visual artifact creation",
-    summary: "This sounds like poster, art, or visual asset work.",
-    keywords: ["art", "poster", "visual", "canvas", "image", "generative"],
+    keywords: [
+      "art",
+      "poster",
+      "visual",
+      "canvas",
+      "image",
+      "generative",
+      "arte",
+      "imagem",
+    ],
     skillHints: ["canvas-design", "algorithmic-art"],
   },
 ];
@@ -253,8 +299,9 @@ export function buildAssistantRecommendation(args: {
   snapshot: AssistantProjectSnapshot;
   skills: SkillDescriptor[];
   toolStatuses: ToolStatus[];
+  messages: I18nMessages;
 }): AssistantRecommendation {
-  const { goal, snapshot, skills, toolStatuses } = args;
+  const { goal, snapshot, skills, toolStatuses, messages } = args;
   const intent = pickIntent(goal);
   const actions: AssistantAction[] = [];
   const notes: string[] = [];
@@ -263,16 +310,14 @@ export function buildAssistantRecommendation(args: {
     actions.push({
       id: "init",
       kind: "init",
-      label: "Run onboarding first",
-      reason: "This CLI still needs a default agent and an external skill library.",
+      label: messages.assistant.actions.initLabel,
+      reason: messages.assistant.actions.initReason,
       command: "master-skill init",
     });
   }
 
   if (snapshot.detectedAgents.length === 0) {
-    notes.push(
-      "No agent marker was detected in this project. If needed, use `--agent` explicitly.",
-    );
+    notes.push(messages.assistant.noMarkersNote);
   }
 
   const skillQueries = resolveSkillQueries(skills, intent?.skillHints);
@@ -288,8 +333,8 @@ export function buildAssistantRecommendation(args: {
       actions.push({
         id: "bootstrap-tools",
         kind: "bootstrap",
-        label: `Bootstrap ${missingTools.join(", ")}`,
-        reason: `${intent.frameworkId} depends on missing local tools.`,
+        label: messages.assistant.actions.bootstrapLabel(missingTools.join(", ")),
+        reason: messages.assistant.actions.bootstrapReason(intent.frameworkId),
         command: `master-skill bootstrap --framework ${intent.frameworkId}`,
         toolIds: missingTools,
       });
@@ -306,8 +351,8 @@ export function buildAssistantRecommendation(args: {
       actions.push({
         id: "install-framework",
         kind: "add-framework",
-        label: `Install ${frameworkLabel}`,
-        reason: intent.summary,
+        label: messages.assistant.actions.installFrameworkLabel(frameworkLabel),
+        reason: messages.assistant.intents[intent.id].summary,
         command: `master-skill add framework ${intent.frameworkId}`,
         frameworkId: intent.frameworkId,
       });
@@ -318,8 +363,8 @@ export function buildAssistantRecommendation(args: {
     actions.push({
       id: "add-skill",
       kind: "add-skill",
-      label: `Install skill ${skillQueries[0]}`,
-      reason: "This skill matches the current project intent.",
+      label: messages.assistant.actions.installSkillLabel(skillQueries[0]),
+      reason: messages.assistant.actions.installSkillReason,
       command: `master-skill add skill "${skillQueries[0]}"`,
       skillQuery: skillQueries[0],
     });
@@ -327,8 +372,8 @@ export function buildAssistantRecommendation(args: {
     actions.push({
       id: "sync-skills",
       kind: "sync-skills",
-      label: `Sync ${skillQueries.length} related skills`,
-      reason: "A small bundle of skills matches the current project intent.",
+      label: messages.assistant.actions.syncSkillsLabel(skillQueries.length),
+      reason: messages.assistant.actions.syncSkillsReason,
       command: skillQueries
         .map((query) => `master-skill sync skills --query "${query}"`)
         .join("  |  "),
@@ -340,28 +385,25 @@ export function buildAssistantRecommendation(args: {
     actions.push({
       id: "doctor",
       kind: "doctor",
-      label: "Inspect the project first",
-      reason: "No strong intent match was found, so inspection is the safest first move.",
+      label: messages.assistant.actions.doctorLabel,
+      reason: messages.assistant.actions.doctorReason,
       command: "master-skill doctor",
     });
   }
 
   if (!goal.trim()) {
-    notes.push(
-      "No explicit goal was provided, so the assistant used only the current project state.",
-    );
+    notes.push(messages.assistant.noGoalNote);
   }
 
-  notes.push(
-    "This assistant is heuristic-based. It uses project context plus your stated goal, without requiring an API key.",
-  );
+  notes.push(messages.assistant.heuristicNote);
 
   return {
     goal,
-    interpretedIntent: intent?.label ?? "General project setup",
-    summary:
-      intent?.summary ??
-      "No strong intent match was found, so the assistant fell back to generic project setup guidance.",
+    interpretedIntent:
+      intent?.id ? messages.assistant.intents[intent.id].label : messages.assistant.generalIntent,
+    summary: intent?.id
+      ? messages.assistant.intents[intent.id].summary
+      : messages.assistant.fallbackSummary,
     notes,
     actions,
   };
@@ -369,19 +411,22 @@ export function buildAssistantRecommendation(args: {
 
 export function formatAssistantRecommendation(
   recommendation: AssistantRecommendation,
+  messages: I18nMessages,
 ): string {
   return [
-    `Detected intent: ${recommendation.interpretedIntent}`,
-    `Summary: ${recommendation.summary}`,
-    recommendation.goal ? `Goal: ${recommendation.goal}` : "Goal: not provided",
+    `${messages.assistant.detectedIntent}: ${recommendation.interpretedIntent}`,
+    `${messages.assistant.summary}: ${recommendation.summary}`,
+    recommendation.goal
+      ? `${messages.assistant.goal}: ${recommendation.goal}`
+      : `${messages.assistant.goal}: ${messages.assistant.goalMissing}`,
     "",
-    "Suggested actions:",
+    messages.assistant.suggestedActions,
     ...recommendation.actions.map(
       (action, index) =>
-        `${index + 1}. ${action.label}\n   Why: ${action.reason}\n   Command: ${buildActionCommand(action)}`,
+        `${index + 1}. ${action.label}\n   ${messages.assistant.why}: ${action.reason}\n   ${messages.assistant.command}: ${buildActionCommand(action)}`,
     ),
     "",
-    "Notes:",
+    messages.assistant.notes,
     ...recommendation.notes.map((note) => `- ${note}`),
   ].join("\n");
 }
