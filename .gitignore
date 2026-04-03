@@ -1,0 +1,10 @@
+node_modules/
+dist/
+*.tgz
+.agents/
+code-review-workspace/
+aurlis-folder-icon-bdc1a358fe39.ico
+auralis-folder-icon-bdc1a358fe39.ico
+desktop.ini
+.DS_Store
+Thumbs.db
