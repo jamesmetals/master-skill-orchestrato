@@ -7,12 +7,15 @@ CLI para automatizar o fluxo de skills e frameworks em agentes como Codex, Claud
 ```bash
 npm install
 npm run build
+node dist/cli.js
 node dist/cli.js doctor
 ```
 
 ## Fluxo basico
 
 ```bash
+npx tsx src/cli.ts
+npx tsx src/cli.ts guide
 npx tsx src/cli.ts init
 npx tsx src/cli.ts list skills
 npx tsx src/cli.ts add skill brainstorm
@@ -23,6 +26,8 @@ npx tsx src/cli.ts add framework bmad
 
 ## Comandos
 
+- `master-skill` sem argumentos: abre a home interativa e explica o que a CLI faz no projeto atual
+- `guide`: mostra um resumo contextual do projeto atual e o proximo passo recomendado
 - `init`: salva agente padrao, pasta global de skills e pasta externa de skills
 - `doctor`: inspeciona configuracao e markers do projeto
 - `bootstrap`: instala pre-requisitos como `uv` e `gh` quando possivel
@@ -48,6 +53,8 @@ npm publish
 ## Uso depois de publicado
 
 ```bash
+npx master-skill-orchestrator
+npx master-skill-orchestrator guide
 npx master-skill-orchestrator init
 npx master-skill-orchestrator doctor
 npx master-skill-orchestrator sync skills
